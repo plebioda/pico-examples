@@ -12,11 +12,11 @@
 
 #include "hardware/rtc.h"
 #include "hardware/exception.h"
+#include "hardware/flash.h"
 
 #include "lwip/ip4_addr.h"
 #include "lwip/apps/mqtt.h"
 #include "lwip/apps/sntp.h"
-#include "netif/ppp/polarssl/sha1.h"
 
 #include "FreeRTOS.h"
 #include "task.h"
@@ -28,6 +28,7 @@
 #include "bme280_i2c_dev.h"
 #include "bme68x_i2c_dev.h"
 #include "bsec_handler.h"
+#include "util.h"
 
 #include <time.h>
 
@@ -50,108 +51,11 @@
 #define EPD_QUEUE_LENGTH 20
 #define DIFF_SEC_1970_2036 ((u32_t)2085978496L)
 
-static inline int64_t ns_to_us(int64_t ns)
-{
-    return ns / 1000;
-}
-
-static inline int64_t us_to_ns(int64_t us)
-{
-    return us * 1000;
-}
-
-static inline uint32_t ns_to_ms_u32(int64_t ns)
-{
-    return (uint32_t)(ns / 1000000);
-}
-
-static inline int64_t sec_to_ns(int sec)
-{
-    return (int64_t)sec * 1000000000;
-}
-
 static QueueHandle_t xMqttQueue = NULL;
 static QueueHandle_t xEpdQueue = NULL;
 
-#define DATETIME_INIT_VALUE \
-    {                       \
-        .year = -1,         \
-        .month = -1,        \
-        .day = -1,          \
-        .dotw = -1,         \
-        .hour = -1,         \
-        .min = -1,          \
-        .sec = -1           \
-    }
-
 #define EPD_TASK_QUEUE_WAIT_MS 200
 #define EPD_TASK_QUEUE_WAIT_TICKS (portTICK_PERIOD_MS * EPD_TASK_QUEUE_WAIT_MS)
-
-static const char *DATETIME_MONTHS[12] = {
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December"};
-
-static const char *DATETIME_DOWS[7] = {
-    "Sunday",
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-};
-
-static char *datetime_str_date(char *buf, size_t buf_size, const datetime_t *t)
-{
-    snprintf(
-        buf,
-        buf_size,
-        "%.3s, %d %.3s %d",
-        DATETIME_DOWS[t->dotw],
-        t->day,
-        DATETIME_MONTHS[t->month - 1],
-        t->year);
-
-    return buf;
-}
-
-static char *datetime_str_time(char *buf, size_t buf_size, const datetime_t *t)
-{
-    snprintf(
-        buf,
-        buf_size,
-        "%2d:%02d:%02d",
-        t->hour,
-        t->min,
-        t->sec);
-
-    return buf;
-}
-
-static char *datetime_str(char *buf, size_t buf_size, const datetime_t *t)
-{
-    snprintf(buf,
-             buf_size,
-             "%.3s %d %.3s %2d:%02d:%02d %d",
-             DATETIME_DOWS[t->dotw],
-             t->day,
-             DATETIME_MONTHS[t->month - 1],
-             t->hour,
-             t->min,
-             t->sec,
-             t->year);
-    return buf;
-}
 
 static bool do_update = false;
 
@@ -257,67 +161,61 @@ err_bme280_i2c_dev_init:
 struct bsec_handler_state default_bsec_handler_state = {
     .serialized_state = {
         0x00, 0x08, 0x04, 0x01, 0x3d, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x73, 0x00, 0x00, 0x00,
-        0x2d, 0x00, 0x01, 0x00, 0x68, 0xaf, 0xb4, 0x40, 0x27, 0xd6, 0xb4, 0x40, 0xb6, 0x30, 0xab, 0x40,
+        0x2d, 0x00, 0x01, 0x20, 0x68, 0xaf, 0xb4, 0x40, 0x27, 0xd6, 0xb4, 0x40, 0xb6, 0x30, 0xab, 0x40,
         0x84, 0x01, 0xab, 0x40, 0x00, 0x00, 0x00, 0x00, 0x64, 0x00, 0x22, 0x22, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x80, 0x3f, 0x22, 0x0c, 0x00, 0x02,
-        0x00, 0xba, 0x25, 0x67, 0x42, 0xe8, 0xb3, 0x89, 0x42, 0x10, 0x00, 0x03, 0x00, 0xf0, 0xfa, 0xa7,
-        0x40, 0x4c, 0x19, 0xdc, 0x41, 0x39, 0x8c, 0x1b, 0x42, 0x16, 0x00, 0x05, 0x00, 0xe0, 0x33, 0x09,
-        0xa5, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x68, 0x68, 0x32, 0x51, 0x01, 0x00, 0x0c,
-        0x00, 0x09, 0x00, 0xe0, 0x33, 0x09, 0xa5, 0x0b, 0x00, 0x00, 0x00, 0x08, 0x00, 0x0a, 0x00, 0xd3,
-        0xcb, 0xd8, 0x41, 0xa5, 0xa5, 0xa5, 0xa5, 0x35, 0xa7, 0x00, 0x00
+        0x20, 0xba, 0x25, 0x67, 0x42, 0xe8, 0xb3, 0x89, 0x42, 0x10, 0x00, 0x03, 0x20, 0x33, 0x35, 0xaa,
+        0x40, 0xed, 0x0d, 0xe3, 0x41, 0xfb, 0xa0, 0x07, 0x42, 0x16, 0x00, 0x05, 0x20, 0x70, 0x7b, 0xe5,
+        0x52, 0x3a, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x2f, 0x10, 0x51, 0x01, 0x00, 0x0c,
+        0x00, 0x09, 0x20, 0x70, 0x7b, 0xe5, 0x52, 0x3a, 0x01, 0x00, 0x00, 0x08, 0x00, 0x0a, 0x20, 0xd8,
+        0x96, 0xe3, 0x41, 0xa5, 0xa5, 0xa5, 0xa5, 0x10, 0xe7, 0x00, 0x00
     },
     .serialized_state_size = 139
 };
 
-void print_bsec_handler_state(struct bsec_handler_state *bsec_handler_state)
-{
-    static const int max_hex_num = 16;
-    printf("struct bsec_handler_state default_bsec_handler_state = {\n");
-    printf("    .serialized_state = {\n");
-    for (uint32_t i = 0; i < BSEC_MAX_STATE_BLOB_SIZE; i++)
-    {
-        uint8_t value = i < bsec_handler_state->serialized_state_size ? bsec_handler_state->serialized_state[i] : 0;
+#define FLASH_TARGET_OFFSET (256 * 1024)
 
-        if (!(i % max_hex_num))
-        {
-            printf("        ");
-        }
+struct flash_layout {
+    struct bsec_handler_state bsec_handler_state;
+    struct sha1 bsec_handler_state_sha1;
+};
 
-        printf("0x%02x", value);
-        if (i == bsec_handler_state->serialized_state_size - 1)
-        {
-            printf("\n");
-        }
-        else if ((i % max_hex_num) == (max_hex_num - 1))
-        {
-            printf(",\n");
-        }
-        else
-        {
-            printf(", ");
-        }
-    }
+union flash {
+    struct flash_layout layout;
+    uint8_t page[FLASH_PAGE_SIZE];
+};
 
-    printf("    },\n");
-    printf("    .serialized_state_size = %lu\n", bsec_handler_state->serialized_state_size);
-    printf("};\n");
-}
-
-void bsec_state_sha1(uint8_t sha1_output[20])
-{
-    sha1_context sha1_ctx;
-
-    sha1_starts(&sha1_ctx);
-
-    sha1_finish(&sha1_ctx, sha1_output);
-}
+union flash *flash = (union flash *)(XIP_BASE + FLASH_TARGET_OFFSET);
+union flash flash_mirror;
 
 void bsec_dev_task_fn(__unused void *params)
 {
+    memcpy(&flash_mirror, flash, sizeof(flash_mirror));
+    struct bsec_handler_state bsec_handler_state;
+    int8_t ret;
+    struct sha1 bsec_handler_state_sha1;
+    ret = sha1_get(&bsec_handler_state_sha1, (const void *)&flash->layout.bsec_handler_state, sizeof(flash->layout.bsec_handler_state));
+    if (ret)
+    {
+        printf("sha1_get for bsec_handler_state from flash returned %d\n", ret);
+        return;
+    }
+
+    if (memcmp(&bsec_handler_state_sha1, &flash->layout.bsec_handler_state_sha1, sizeof(bsec_handler_state_sha1)))
+    {
+        printf("SHA1 mismatch, using default state\n");
+        memcpy(&bsec_handler_state, &default_bsec_handler_state, sizeof(bsec_handler_state));
+    }
+    else
+    {
+        printf("using bsec_handler_state from flash\n");
+        memcpy(&bsec_handler_state, &flash->layout.bsec_handler_state, sizeof(bsec_handler_state));
+    }
+
     init_i2c0();
 
     struct bme68x_i2c_dev bme68x_i2c_dev;
-    int8_t ret = bme68x_i2c_dev_init(&bme68x_i2c_dev, i2c0, BME68X_I2C_ADDR_LOW);
+    ret = bme68x_i2c_dev_init(&bme68x_i2c_dev, i2c0, BME68X_I2C_ADDR_LOW);
     if (ret)
     {
         printf("bme68x_i2c_dev_init returned %d\n", ret);
@@ -332,7 +230,7 @@ void bsec_dev_task_fn(__unused void *params)
         return;
     }
 
-    ret = bsec_handler_set_state(&bsec_handler, &default_bsec_handler_state);
+    ret = bsec_handler_set_state(&bsec_handler, &bsec_handler_state);
     if (ret)
     {
         printf("bsec_handler_subscribe_all returned %d\n", ret);
@@ -367,7 +265,6 @@ void bsec_dev_task_fn(__unused void *params)
 
         if (relative_time_ns >= bsec_get_state_next_timestamp_ns)
         {
-            struct bsec_handler_state bsec_handler_state;
             ret = bsec_handler_get_state(&bsec_handler, &bsec_handler_state);
             if (ret)
             {
@@ -376,6 +273,22 @@ void bsec_dev_task_fn(__unused void *params)
             else
             {
                 print_bsec_handler_state(&bsec_handler_state);
+                struct sha1 sha1;
+                ret = sha1_get(&sha1, (const void *)&bsec_handler_state, sizeof(bsec_handler_state));
+                if (ret) {
+                    printf("get_sha1 returned %d\n", ret);
+                }
+                else
+                {
+                    memcpy(&flash_mirror.layout.bsec_handler_state, &bsec_handler_state, sizeof(flash_mirror.layout.bsec_handler_state));
+                    memcpy(&flash_mirror.layout.bsec_handler_state_sha1, &sha1, sizeof(flash_mirror.layout.bsec_handler_state_sha1));
+
+                    // flash_range_erase(FLASH_TARGET_OFFSET, FLASH_PAGE_SIZE);
+                    // flash_range_program(FLASH_TARGET_OFFSET, (const uint8_t*)&flash_mirror, FLASH_PAGE_SIZE);
+
+                    char buff[256];
+                    printf("bsec_hander_state, sha1 = %s\n", sha1_to_str(buff, sizeof(buff), &sha1));
+                }
             }
             bsec_get_state_next_timestamp_ns += sec_to_ns(BSEC_STATE_DELAY_SEC);
         }
@@ -523,8 +436,10 @@ void epd_task_fn(__unused void *params)
         old_datetime = cur_datetime;
     }
 }
+
 static void mqtt_publish_request_cb(void *arg, err_t result)
 {
+    printf("mqtt_publish_request_cb: result = %d\n", result);
 }
 
 static void mqtt_connection_cb(mqtt_client_t *client, void *arg, mqtt_connection_status_t status)

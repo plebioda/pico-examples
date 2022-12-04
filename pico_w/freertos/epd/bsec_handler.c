@@ -1,6 +1,7 @@
 #include "bsec_handler.h"
 
 #include <stdio.h>
+#include "util.h"
 
 static const bsec_virtual_sensor_t bsec_virtual_sensor_all[BSEC_NUMBER_OUTPUTS] = {
     BSEC_OUTPUT_IAQ,
@@ -53,6 +54,23 @@ static const char *bsec_output_to_str(bsec_virtual_sensor_t sensor_id)
         return "gas_percentage";
     default:
         return "unknown";
+    }
+}
+
+static const char *bsec_accuracy_to_str(uint8_t accuracy)
+{
+    switch (accuracy)
+    {
+    case 0:
+        return "UNRELIABLE";
+    case 1:
+        return "LOW_ACCURACY";
+    case 2:
+        return "MEDIUM_ACCURACY";
+    case 3:
+        return "HIGH_ACCURACY";
+    default:
+        return "UNKNOWN_ACCURACY";
     }
 }
 
@@ -193,7 +211,7 @@ static int8_t bsec_handler_process_data(struct bsec_handler *bsec_handler, int64
     {
         const char *output_name = bsec_output_to_str(outputs[i].sensor_id);
 
-        printf("%24s = %10.2f [accuracy = %f]\n", output_name, outputs[i].signal, outputs[i].accuracy);
+        printf("%24s = %10.2f [%s]\n", output_name, outputs[i].signal, bsec_accuracy_to_str(outputs[i].accuracy));
     }
     printf("-------------------------------------------------------------------\n");
 

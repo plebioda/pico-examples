@@ -7,6 +7,7 @@ set(PICOW_FREERTOS_EPD_SOURCES
         dev/bme280_i2c_dev.c
         dev/bme68x_i2c_dev.c
         bsec_handler.c
+        util.c
         ${BME280_DRIVER_PATH}/bme280.c
         ${BME68x_DRIVER_PATH}/bme68x.c
         )
